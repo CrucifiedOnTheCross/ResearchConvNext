@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import gc
 import math
+import os
 import shutil
 import sys
 import time
@@ -395,6 +396,25 @@ def copy_split_summary(cfg: dict, run_dir: Path) -> None:
             return
 
 
+def create_checkpoint_alias(source: Path, alias: Path) -> None:
+    alias.unlink(missing_ok=True)
+    try:
+        os.link(source, alias)
+    except OSError:
+        try:
+            alias.symlink_to(source.name)
+        except OSError:
+            if alias.name == "best.pt":
+                shutil.copy2(source, alias)
+
+
+def remove_unreferenced_checkpoints(run: Path, best_records: dict) -> None:
+    referenced = {record["checkpoint"] for record in best_records.values()}
+    for checkpoint in run.glob("checkpoint_epoch_*.pt"):
+        if checkpoint.name not in referenced:
+            checkpoint.unlink()
+
+
 def evaluate_final_splits(
     raw_model: torch.nn.Module,
     loaders: dict,
@@ -753,6 +773,7 @@ def main() -> None:
                 writer.add_scalar(key, value, epoch + 1)
 
         primary_improved = False
+        improved_monitors = []
         for monitor in monitors:
             if monitor not in row:
                 raise ValueError(f"Unknown checkpoint monitor {monitor!r}; row has {sorted(row)}")
@@ -760,20 +781,28 @@ def main() -> None:
             if score <= best_scores[monitor]:
                 continue
             best_scores[monitor] = score
-            best_records[monitor] = {"epoch": epoch + 1, "score": score}
+            improved_monitors.append(monitor)
+            if monitor == tc["monitor"]:
+                primary_improved = True
+
+        if improved_monitors:
+            checkpoint_name = f"checkpoint_epoch_{epoch + 1:03d}.pt"
             payload = {
                 "model": raw_model.state_dict(),
                 "config": cfg,
                 "epoch": epoch + 1,
-                "score": score,
-                "monitor": monitor,
                 "method": method,
                 "class_counts": class_counts.detach().cpu(),
+                "scores": {key: float(row[key]) for key in monitors},
             }
-            torch.save(payload, run / f"best_{monitor.removeprefix('val_')}.pt")
-            if monitor == tc["monitor"]:
-                torch.save(payload, run / "best.pt")
-                primary_improved = True
+            torch.save(payload, run / checkpoint_name)
+            for monitor in improved_monitors:
+                best_records[monitor] = {
+                    "epoch": epoch + 1,
+                    "score": float(row[monitor]),
+                    "checkpoint": checkpoint_name,
+                }
+            remove_unreferenced_checkpoints(run, best_records)
         bad = 0 if primary_improved else bad + 1
 
         save_json(history, run / "history.json")
@@ -782,19 +811,26 @@ def main() -> None:
             logger.info("Early stopping")
             break
 
+    primary_record = best_records[tc["monitor"]]
+    primary_checkpoint = run / primary_record["checkpoint"]
     checkpoint = torch.load(
-        run / "best.pt",
+        primary_checkpoint,
         map_location=device,
         weights_only=False,
     )
+
+    create_checkpoint_alias(primary_checkpoint, run / "best.pt")
+    for monitor, record in best_records.items():
+        alias = run / f"best_{monitor.removeprefix('val_')}.pt"
+        create_checkpoint_alias(run / record["checkpoint"], alias)
 
     raw_model.load_state_dict(checkpoint["model"])
 
     save_json(
         {
             "best_epoch": checkpoint["epoch"],
-            "best_score": checkpoint["score"],
-            "monitor": checkpoint["monitor"],
+            "best_score": primary_record["score"],
+            "monitor": tc["monitor"],
             "method": checkpoint["method"],
             "all_checkpoints": best_records,
         },
