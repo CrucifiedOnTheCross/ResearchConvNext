@@ -1,5 +1,5 @@
 from __future__ import annotations
-import argparse, shutil, subprocess, urllib.request, zipfile
+import argparse, os, shutil, subprocess, zipfile
 from pathlib import Path
 
 def main():
@@ -12,12 +12,13 @@ def main():
         try:
             subprocess.run(["kaggle","datasets","download","-d","kmader/skin-cancer-mnist-ham10000","-p",str(root)], check=True)
         except (subprocess.CalledProcessError, FileNotFoundError):
-            # Public Kaggle API fallback; useful on headless servers without kaggle.json.
-            target=root/"skin-cancer-mnist-ham10000.zip"
-            print("Kaggle CLI unavailable/unauthenticated; using public dataset API")
-            urllib.request.urlretrieve("https://www.kaggle.com/api/v1/datasets/download/kmader/skin-cancer-mnist-ham10000",target)
+            # Official anonymous KaggleHub fallback for headless servers without kaggle.json.
+            os.environ["KAGGLEHUB_CACHE"]=str(root.resolve())
+            import kagglehub
+            print("Kaggle CLI unavailable/unauthenticated; using KaggleHub")
+            kagglehub.dataset_download("kmader/skin-cancer-mnist-ham10000")
         archives=list(root.glob("*.zip"))
-    if not archives: raise FileNotFoundError("HAM10000 archive was not downloaded")
+    if not archives and not next(root.rglob("HAM10000_metadata.csv"),None): raise FileNotFoundError("HAM10000 was not downloaded")
     for z in archives:
         print(f"Extracting {z}")
         with zipfile.ZipFile(z) as f: f.extractall(root)

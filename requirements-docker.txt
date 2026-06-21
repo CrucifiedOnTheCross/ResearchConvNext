@@ -9,3 +9,4 @@ seaborn==0.13.2
 umap-learn==0.5.7
 tensorboard==2.19.0
 kaggle==1.7.4.5
+kagglehub==0.3.12
