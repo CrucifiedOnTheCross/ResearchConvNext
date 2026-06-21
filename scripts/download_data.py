@@ -1,5 +1,5 @@
 from __future__ import annotations
-import argparse, shutil, subprocess, zipfile
+import argparse, shutil, subprocess, urllib.request, zipfile
 from pathlib import Path
 
 def main():
@@ -9,7 +9,13 @@ def main():
     if a.archive:
         archives=[Path(a.archive)]
     else:
-        subprocess.run(["kaggle","datasets","download","-d","kmader/skin-cancer-mnist-ham10000","-p",str(root)], check=True)
+        try:
+            subprocess.run(["kaggle","datasets","download","-d","kmader/skin-cancer-mnist-ham10000","-p",str(root)], check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            # Public Kaggle API fallback; useful on headless servers without kaggle.json.
+            target=root/"skin-cancer-mnist-ham10000.zip"
+            print("Kaggle CLI unavailable/unauthenticated; using public dataset API")
+            urllib.request.urlretrieve("https://www.kaggle.com/api/v1/datasets/download/kmader/skin-cancer-mnist-ham10000",target)
         archives=list(root.glob("*.zip"))
     if not archives: raise FileNotFoundError("HAM10000 archive was not downloaded")
     for z in archives:
@@ -21,4 +27,3 @@ def main():
             for item in found.parent.iterdir(): shutil.move(str(item), root/item.name)
     print("HAM10000 ready at", root.resolve())
 if __name__ == "__main__": main()
-

@@ -33,8 +33,10 @@ def find_batch(cfg,device,logger):
         try:
             m=build_model(mc,device); m.train(); x=torch.randn(b*2,3,size,size,device=device)
             if tc["channels_last"]: m=m.to(memory_format=torch.channels_last); x=x.to(memory_format=torch.channels_last)
+            probe_opt=torch.optim.AdamW(m.parameters(),lr=1e-4)
             with autocast_ctx(tc["precision"]): logits,z=m(x); loss=logits.mean()+z.mean()
-            loss.backward(); del m,x,logits,z,loss; torch.cuda.empty_cache(); logger.info("Auto batch selected: %s",b); return b
+            loss.backward(); probe_opt.step()  # materialize AdamW states before accepting the batch
+            del probe_opt,m,x,logits,z,loss; torch.cuda.empty_cache(); logger.info("Auto batch selected: %s",b); return b
         except torch.cuda.OutOfMemoryError:
             logger.info("Batch %s OOM",b); torch.cuda.empty_cache()
     raise RuntimeError("No batch candidate fits VRAM")
