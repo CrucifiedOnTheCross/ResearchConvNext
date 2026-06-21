@@ -1,0 +1,5 @@
+_base_: default.yaml
+training:
+  method: supcon
+  metric_weight: 0.5
+  class_balance: weighted_sampler

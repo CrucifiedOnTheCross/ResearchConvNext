@@ -1,0 +1,7 @@
+_base_: default.yaml
+training:
+  method: balanced_softmax
+  batch_candidates: [96, 80, 64, 48, 32, 24, 16, 8]
+  label_smoothing: 0.0
+  metric_weight: 0.0
+  class_balance: none

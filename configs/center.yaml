@@ -1,0 +1,5 @@
+_base_: default.yaml
+training:
+  method: center
+  metric_weight: 0.1
+  class_balance: weighted_sampler

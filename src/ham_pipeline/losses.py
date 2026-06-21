@@ -1,76 +1,191 @@
 from __future__ import annotations
-import torch
-from torch import nn
-import torch.nn.functional as F
 
-def pair_masks(y):
-    same=y[:,None].eq(y[None,:]); eye=torch.eye(len(y),device=y.device,dtype=torch.bool)
+import torch
+import torch.nn.functional as F
+from torch import nn
+
+
+def pair_masks(targets: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    same = targets[:, None].eq(targets[None, :])
+    eye = torch.eye(len(targets), device=targets.device, dtype=torch.bool)
     return same & ~eye, ~same
 
-class SupCon(nn.Module):
-    def __init__(self,t=.1): super().__init__(); self.t=t
-    def forward(self,z,y,**_):
-        sim=z@z.T/self.t; pos,neg=pair_masks(y); sim=sim-sim.max(1,keepdim=True).values.detach()
-        logp=sim-torch.log((torch.exp(sim)*(~torch.eye(len(y),device=y.device,dtype=torch.bool))).sum(1,keepdim=True).clamp_min(1e-12))
-        valid=pos.sum(1)>0
-        return -(logp*pos).sum(1)[valid].div(pos.sum(1)[valid]).mean() if valid.any() else z.sum()*0
 
-class BatchHardTriplet(nn.Module):
-    def __init__(self,m=.2): super().__init__(); self.m=m
-    def forward(self,z,y,**_):
-        d=torch.cdist(z,z); pos,neg=pair_masks(y); hp=d.masked_fill(~pos,-1).max(1).values; hn=d.masked_fill(~neg,10).min(1).values
-        valid=pos.any(1)&neg.any(1); return F.relu(hp[valid]-hn[valid]+self.m).mean()
+def normalized(proxies: torch.Tensor | None) -> torch.Tensor:
+    if proxies is None:
+        raise ValueError("This metric loss requires learnable class proxies")
+    return F.normalize(proxies, dim=1)
 
-class MultiSimilarity(nn.Module):
-    def __init__(self,m=.5,a=2,b=50): super().__init__(); self.m=m; self.a=a; self.b=b
-    def forward(self,z,y,**_):
-        s=z@z.T; pos,neg=pair_masks(y)
-        lp=torch.log1p((torch.exp(-self.a*(s-self.m))*pos).sum(1))/self.a
-        ln=torch.log1p((torch.exp(self.b*(s-self.m))*neg).sum(1))/self.b
-        return (lp+ln).mean()
+
+def multi_positive_loss(
+    logits: torch.Tensor,
+    positive_mask: torch.Tensor,
+    denominator_mask: torch.Tensor,
+) -> torch.Tensor:
+    positive_mask = positive_mask & denominator_mask
+    valid = positive_mask.any(dim=1)
+    if not valid.any():
+        return logits.sum() * 0.0
+    masked = logits.masked_fill(~denominator_mask, -torch.inf)
+    log_prob = logits - torch.logsumexp(masked, dim=1, keepdim=True)
+    positives = positive_mask.float()
+    loss = -(log_prob.masked_fill(~positive_mask, 0.0) * positives).sum(1)
+    loss = loss / positives.sum(1).clamp_min(1.0)
+    return loss[valid].mean()
+
+
+class SupConLoss(nn.Module):
+    def __init__(self, temperature: float = 0.1):
+        super().__init__()
+        self.temperature = temperature
+
+    def forward(self, embeddings: torch.Tensor, targets: torch.Tensor, **_) -> torch.Tensor:
+        logits = embeddings @ embeddings.T / self.temperature
+        positives, _ = pair_masks(targets)
+        denominator = ~torch.eye(len(targets), device=targets.device, dtype=torch.bool)
+        return multi_positive_loss(logits, positives, denominator)
+
+
+class BatchHardTripletLoss(nn.Module):
+    def __init__(self, margin: float = 0.2):
+        super().__init__()
+        self.margin = margin
+
+    def forward(self, embeddings: torch.Tensor, targets: torch.Tensor, **_) -> torch.Tensor:
+        distances = torch.cdist(embeddings.float(), embeddings.float())
+        positives, negatives = pair_masks(targets)
+        valid = positives.any(1) & negatives.any(1)
+        if not valid.any():
+            return embeddings.sum() * 0.0
+        hardest_positive = distances.masked_fill(~positives, -torch.inf).max(1).values
+        hardest_negative = distances.masked_fill(~negatives, torch.inf).min(1).values
+        return F.relu(hardest_positive[valid] - hardest_negative[valid] + self.margin).mean()
+
+
+class MultiSimilarityLoss(nn.Module):
+    def __init__(self, margin: float = 0.5, alpha: float = 2.0, beta: float = 50.0):
+        super().__init__()
+        self.margin, self.alpha, self.beta = margin, alpha, beta
+
+    def forward(self, embeddings: torch.Tensor, targets: torch.Tensor, **_) -> torch.Tensor:
+        similarities = embeddings @ embeddings.T
+        positives, negatives = pair_masks(targets)
+        pos = torch.exp(-self.alpha * (similarities - self.margin)).masked_fill(~positives, 0).sum(1)
+        neg = torch.exp(self.beta * (similarities - self.margin)).masked_fill(~negatives, 0).sum(1)
+        return (torch.log1p(pos) / self.alpha + torch.log1p(neg) / self.beta).mean()
+
 
 class CircleLoss(nn.Module):
-    def __init__(self,m=.25,g=64): super().__init__(); self.m=m; self.g=g
-    def forward(self,z,y,**_):
-        s=z@z.T; pos,neg=pair_masks(y); ap=(-s.detach()+1+self.m).clamp_min(0); an=(s.detach()+self.m).clamp_min(0)
-        lp=-self.g*ap*(s-(1-self.m)); ln=self.g*an*(s-self.m)
-        return F.softplus(torch.logsumexp(lp.masked_fill(~pos,-1e4),1)+torch.logsumexp(ln.masked_fill(~neg,-1e4),1)).mean()
+    def __init__(self, margin: float = 0.25, gamma: float = 64.0):
+        super().__init__()
+        self.margin, self.gamma = margin, gamma
 
-class ProxyAnchor(nn.Module):
-    def __init__(self,m=.1,a=32): super().__init__(); self.m=m; self.a=a
-    def forward(self,z,y,proxies,**_):
-        s=z@F.normalize(proxies,dim=1).T; oh=F.one_hot(y,proxies.shape[0]).bool()
-        return (torch.log1p((torch.exp(-self.a*(s-self.m))*oh).sum(0)).mean()+torch.log1p((torch.exp(self.a*(s+self.m))*(~oh)).sum(0)).mean())
+    def forward(self, embeddings: torch.Tensor, targets: torch.Tensor, **_) -> torch.Tensor:
+        similarities = embeddings @ embeddings.T
+        positives, negatives = pair_masks(targets)
+        alpha_p = (-similarities.detach() + 1 + self.margin).clamp_min(0)
+        alpha_n = (similarities.detach() + self.margin).clamp_min(0)
+        pos = (-self.gamma * alpha_p * (similarities - (1 - self.margin))).masked_fill(~positives, -torch.inf)
+        neg = (self.gamma * alpha_n * (similarities - self.margin)).masked_fill(~negatives, -torch.inf)
+        valid = positives.any(1) & negatives.any(1)
+        if not valid.any():
+            return embeddings.sum() * 0.0
+        return F.softplus(torch.logsumexp(pos[valid], 1) + torch.logsumexp(neg[valid], 1)).mean()
 
-class AngularMargin(nn.Module):
-    def __init__(self,m=.2,s=30,kind="arcface"): super().__init__(); self.m=m; self.s=s; self.kind=kind
-    def forward(self,z,y,proxies,**_):
-        c=(z@F.normalize(proxies,dim=1).T).clamp(-1+1e-5,1-1e-5)
-        target=torch.cos(torch.acos(c)+self.m) if self.kind=="arcface" else c-self.m
-        logits=torch.where(F.one_hot(y,c.shape[1]).bool(),target,c)*self.s
-        return F.cross_entropy(logits,y)
+
+class ProxyAnchorLoss(nn.Module):
+    def __init__(self, margin: float = 0.1, alpha: float = 32.0):
+        super().__init__()
+        self.margin, self.alpha = margin, alpha
+
+    def forward(self, embeddings: torch.Tensor, targets: torch.Tensor, proxies=None, **_) -> torch.Tensor:
+        proxies = normalized(proxies)
+        similarities = embeddings @ proxies.T
+        one_hot = F.one_hot(targets, len(proxies)).bool()
+        pos_values = (-self.alpha * (similarities - self.margin)).T.masked_fill(~one_hot.T, -torch.inf)
+        neg_values = (self.alpha * (similarities + self.margin)).T.masked_fill(one_hot.T, -torch.inf)
+        zero = torch.zeros((len(proxies), 1), device=embeddings.device, dtype=embeddings.dtype)
+        positive = torch.logsumexp(torch.cat([zero, pos_values], 1), 1)
+        negative = torch.logsumexp(torch.cat([zero, neg_values], 1), 1)
+        present = one_hot.any(0)
+        return positive[present].mean() + negative.mean()
+
 
 class CenterLoss(nn.Module):
-    def forward(self,z,y,proxies,**_): return ((z-F.normalize(proxies,dim=1)[y])**2).sum(1).mean()
+    def forward(self, embeddings: torch.Tensor, targets: torch.Tensor, proxies=None, **_) -> torch.Tensor:
+        centers = normalized(proxies)
+        return (embeddings - centers[targets]).square().sum(1).mean()
 
-class PaCo(nn.Module):
-    def __init__(self,t=.1): super().__init__(); self.sup=SupCon(t); self.t=t
-    def forward(self,z,y,proxies,**_): return self.sup(z,y)+F.cross_entropy(z@F.normalize(proxies,dim=1).T/self.t,y)
 
-class BalancedContrastive(nn.Module):
-    def __init__(self,t=.1): super().__init__(); self.t=t
-    def forward(self,z,y,class_counts=None,**_):
-        sim=z@z.T/self.t; pos,_=pair_masks(y); eye=torch.eye(len(y),device=y.device,dtype=torch.bool)
-        counts=torch.bincount(y,minlength=int(y.max())+1).float().clamp_min(1); denom=(torch.exp(sim)*(~eye)/counts[y][None,:]).sum(1)
-        lp=sim-torch.log(denom[:,None].clamp_min(1e-12)); valid=pos.any(1)
-        return -(lp*pos).sum(1)[valid].div(pos.sum(1)[valid]).mean()
+class PrototypeLoss(nn.Module):
+    def __init__(self, temperature: float = 0.1):
+        super().__init__()
+        self.temperature = temperature
 
-class PrototypeContrastive(nn.Module):
-    def __init__(self,t=.1): super().__init__(); self.t=t
-    def forward(self,z,y,proxies,**_): return F.cross_entropy(z@F.normalize(proxies,dim=1).T/self.t,y)
+    def forward(self, embeddings: torch.Tensor, targets: torch.Tensor, proxies=None, **_) -> torch.Tensor:
+        return F.cross_entropy(embeddings @ normalized(proxies).T / self.temperature, targets)
 
-def build_metric_loss(name,t=.1,m=.2):
-    table={"supcon":SupCon(t),"triplet":BatchHardTriplet(m),"n_pairs":SupCon(t),"multi_similarity":MultiSimilarity(),"circle":CircleLoss(),"proxy_anchor":ProxyAnchor(m),"arcface":AngularMargin(m,kind="arcface"),"cosface":AngularMargin(m,kind="cosface"),"center":CenterLoss(),"paco":PaCo(t),"bcl":BalancedContrastive(t),"sbcl":BalancedContrastive(t),"prototype":PrototypeContrastive(t),"meta_prototype":PrototypeContrastive(t)}
-    if name not in table: raise ValueError(f"Unknown method {name}; choose {sorted(table)}")
-    return table[name]
 
+class PaCoLiteLoss(nn.Module):
+    """Compact PaCo-inspired loss; not an exact reproduction of the paper."""
+
+    def __init__(self, temperature: float = 0.1):
+        super().__init__()
+        self.temperature = temperature
+
+    def forward(self, embeddings: torch.Tensor, targets: torch.Tensor, proxies=None, **_) -> torch.Tensor:
+        centers = normalized(proxies)
+        keys = torch.cat([centers, embeddings])
+        key_targets = torch.cat([torch.arange(len(centers), device=targets.device), targets])
+        logits = embeddings @ keys.T / self.temperature
+        positives = targets[:, None].eq(key_targets[None])
+        denominator = torch.ones_like(positives)
+        indices = len(centers) + torch.arange(len(embeddings), device=targets.device)
+        denominator[torch.arange(len(embeddings), device=targets.device), indices] = False
+        positives &= denominator
+        return multi_positive_loss(logits, positives, denominator)
+
+
+class BCLLiteLoss(PaCoLiteLoss):
+    """BCL-inspired class-balanced denominator using global train counts."""
+
+    def forward(self, embeddings, targets, proxies=None, class_counts=None, **_):
+        if class_counts is None:
+            raise ValueError("bcl_lite requires global train class_counts")
+        centers = normalized(proxies)
+        key_targets = torch.cat([torch.arange(len(centers), device=targets.device), targets])
+        keys = torch.cat([centers, embeddings])
+        logits = embeddings @ keys.T / self.temperature
+        logits = logits - class_counts.to(logits.device).float().clamp_min(1).log()[key_targets]
+        positives = targets[:, None].eq(key_targets[None])
+        denominator = torch.ones_like(positives)
+        indices = len(centers) + torch.arange(len(embeddings), device=targets.device)
+        denominator[torch.arange(len(embeddings), device=targets.device), indices] = False
+        positives &= denominator
+        return multi_positive_loss(logits, positives, denominator)
+
+
+class SBCLLiteLoss(BCLLiteLoss):
+    """Class-balanced approximation only; it does not claim official SBCL subclass mining."""
+
+
+def build_metric_loss(name: str | None, temperature: float = 0.1, margin: float = 0.2) -> nn.Module | None:
+    if name is None:
+        return None
+    table: dict[str, nn.Module] = {
+        "supcon": SupConLoss(temperature),
+        "n_pairs": SupConLoss(temperature),
+        "triplet": BatchHardTripletLoss(margin),
+        "multi_similarity": MultiSimilarityLoss(),
+        "circle": CircleLoss(),
+        "proxy_anchor": ProxyAnchorLoss(margin),
+        "center": CenterLoss(),
+        "prototype": PrototypeLoss(temperature),
+        "paco_lite": PaCoLiteLoss(temperature),
+        "bcl_lite": BCLLiteLoss(temperature),
+        "sbcl_lite": SBCLLiteLoss(temperature),
+    }
+    try:
+        return table[name]
+    except KeyError as error:
+        raise ValueError(f"Unknown metric loss: {name}") from error

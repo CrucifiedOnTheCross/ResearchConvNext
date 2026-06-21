@@ -48,13 +48,13 @@ docker compose run --rm trainer scripts/download_data.py --root data/ham10000 --
 
 ## Методы
 
-Выбор: `supcon`, `triplet` (batch-hard mining), `n_pairs`, `multi_similarity`, `circle`, `proxy_anchor`, `arcface`, `cosface`, `center`, `paco`, `bcl`, `sbcl`, `prototype`, `meta_prototype`.
+Classification baselines: `ce`, `weighted_ce`, `focal`, `logit_adjustment`, `balanced_softmax`. Representation/metric методы: `supcon`, `triplet`, `n_pairs`, `multi_similarity`, `circle`, `proxy_anchor`, `arcface`, `cosface`, `center`, `prototype`, `meta_prototype`, `paco_lite`, `bcl_lite`, `sbcl_lite`.
 
 ```powershell
-docker compose run --rm trainer scripts/train.py --config configs/default.yaml --set training.method=arcface
+docker compose run --rm trainer scripts/train.py --config configs/arcface.yaml
 ```
 
-SupCon, Triplet, Multi-Similarity, Circle, Proxy-Anchor, ArcFace/CosFace и Center реализованы как самостоятельные objectives. Реализации PaCo/BCL/SBCL и prototype-вариантов здесь являются компактными экспериментальными адаптациями общей схемы `CE + metric objective`; перед заявлением чисел в статье их следует валидировать против официальных репозиториев конкретных публикаций и провести ablation. Это намеренно отмечено, чтобы не выдавать удобный baseline за точную репликацию статьи.
+Linear classifier обучается от backbone features, а metric objectives — в отдельном projected embedding-пространстве. ArcFace/CosFace используют отдельную angular-margin classification head без параллельной обычной CE-head. `paco_lite`, `bcl_lite`, `sbcl_lite` и `meta_prototype` — явно обозначенные компактные адаптации, не точные реплики официальных реализаций статей. BCL-lite использует глобальные train class counts. Method-конфиги наследуют `default.yaml` через `_base_`, поэтому общие параметры задаются в одном месте.
 
 ## Производительность
 
@@ -78,6 +78,25 @@ SupCon, Triplet, Multi-Similarity, Circle, Proxy-Anchor, ArcFace/CosFace и Cent
 - Silhouette, intra/inter-class distance и ratio;
 - normalized confusion matrix, UMAP и t-SNE;
 - `best.pt`, `config.yaml`, `system.json`, `train.log`, `history.json`, TensorBoard и `.npz` с embeddings/logits.
+
+Дополнительно сохраняются checkpoints по Macro-F1, Balanced Accuracy, multiclass MCC и malignant MCC, `split_summary.json`, validation-пороги для malignant/melanoma и таблицы агрегации.
+
+## Серии экспериментов и агрегация
+
+```bash
+python scripts/run_experiments.py --methods ce,focal,balanced_softmax,supcon,arcface --seeds 42,52,62
+python scripts/collect_results.py --root runs
+```
+
+Runner автоматически выбирает `configs/<method>.yaml`. Результаты сохраняются в `runs/summary_per_run.csv` и `runs/summary_by_method.csv` с mean/std/count по seed.
+
+Повторная оценка checkpoint без обучения:
+
+```bash
+python scripts/train.py --eval-only --checkpoint runs/<run>/best.pt
+```
+
+Temperature scaling и пороги Youden/MCC/F1/Balanced Accuracy подбираются только на validation и без переоценки применяются к test.
 
 ## Рекомендуемый порядок экспериментов
 

@@ -4,6 +4,20 @@ from pathlib import Path
 import numpy as np
 import torch
 
+def to_builtin_types(obj):
+    if isinstance(obj, dict):
+        return {str(k): to_builtin_types(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [to_builtin_types(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, np.generic):
+        return obj.item()
+    if torch.is_tensor(obj):
+        value = obj.detach().cpu()
+        return value.item() if value.numel() == 1 else value.tolist()
+    return obj
+
 def seed_everything(seed: int) -> None:
     random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
     if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed)
@@ -29,7 +43,7 @@ def configure_logging(run_dir: Path) -> logging.Logger:
     return logger
 
 def save_json(obj, path: Path) -> None:
-    path.write_text(json.dumps(obj, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    path.write_text(json.dumps(to_builtin_types(obj), indent=2, ensure_ascii=False), encoding="utf-8")
 
 def system_info() -> dict:
     info = {"torch": torch.__version__, "cuda": torch.version.cuda, "cudnn": torch.backends.cudnn.version()}
@@ -39,4 +53,3 @@ def system_info() -> dict:
     try: info["git_commit"] = subprocess.check_output(["git","rev-parse","HEAD"], text=True).strip()
     except Exception: info["git_commit"] = None
     return info
-

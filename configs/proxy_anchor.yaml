@@ -1,0 +1,6 @@
+_base_: default.yaml
+training:
+  method: proxy_anchor
+  metric_weight: 0.2
+  class_balance: weighted_sampler
+  margin: 0.1
