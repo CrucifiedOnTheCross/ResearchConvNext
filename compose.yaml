@@ -27,7 +27,6 @@ services:
       - ./:/workspace
       - ${USERPROFILE}/.kaggle:/root/.kaggle:ro
     environment:
-      - JUPYTER_TOKEN=${JUPYTER_TOKEN:-change-this-token}
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
       - TORCHINDUCTOR_CACHE_DIR=/workspace/runs/.torchinductor
     entrypoint: ["jupyter", "lab"]
@@ -37,7 +36,7 @@ services:
       - "--no-browser"
       - "--ServerApp.allow_remote_access=True"
       - "--ServerApp.root_dir=/workspace"
-      - "--ServerApp.token=${JUPYTER_TOKEN:-change-this-token}"
+      - "--IdentityProvider.token="
     restart: unless-stopped
 
   tensorboard:

@@ -34,7 +34,7 @@ docker compose run --rm trainer scripts/train.py --config configs/default.yaml
 .\scripts\deploy_server.ps1 -Mode services
 ```
 
-Команда напечатает URL с уникальным токеном для JupyterLab. В Jupyter доступны все файлы проекта, `data/`, `runs/`, встроенный терминал и RTX 5080. Обучение можно запускать в терминале: `python scripts/train.py --config configs/default.yaml`. TensorBoard автоматически перечитывает `runs/*/tensorboard` каждые 5 секунд на `http://10.200.1.180:6006`.
+JupyterLab доступен без дополнительной авторизации внутри VPN. В нём видны все файлы проекта, `data/`, `runs/`, встроенный терминал и RTX 5080. Обучение можно запускать в терминале: `python scripts/train.py --config configs/default.yaml`. TensorBoard автоматически перечитывает `runs/*/tensorboard` каждые 5 секунд на `http://10.200.1.180:6006`.
 
 Скачивание использует публичный Kaggle dataset `kmader/skin-cancer-mnist-ham10000`; положите API-токен в `%USERPROFILE%\.kaggle\kaggle.json`. Альтернатива без Kaggle API:
 
