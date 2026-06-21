@@ -23,11 +23,19 @@ if (-not (Test-Path `$git)) {
 if (-not (Test-Path "$RemoteDir\.git")) {
   New-Item -ItemType Directory -Force "$RemoteDir" | Out-Null
   & `$git -C "$RemoteDir" init
-  & `$git -C "$RemoteDir" remote remove origin 2>`$null
+}
+& `$git -C "$RemoteDir" remote get-url origin *>`$null
+if (`$LASTEXITCODE -ne 0) {
   & `$git -C "$RemoteDir" remote add origin "$Repo"
-  & `$git -C "$RemoteDir" fetch origin main
-  & `$git -C "$RemoteDir" checkout -B main origin/main
 } else {
+  & `$git -C "$RemoteDir" remote set-url origin "$Repo"
+}
+& `$git -C "$RemoteDir" fetch origin main
+& `$git -C "$RemoteDir" rev-parse --verify HEAD *>`$null
+if (`$LASTEXITCODE -ne 0) {
+  & `$git -C "$RemoteDir" checkout -B main origin/main --force
+} else {
+  & `$git -C "$RemoteDir" checkout main
   & `$git -C "$RemoteDir" pull --ff-only origin main
 }
 docker compose -f "$RemoteDir\compose.yaml" build trainer
@@ -45,4 +53,3 @@ if ($Mode -eq "train") {
   Invoke-RemotePs "docker compose -f '$RemoteDir\compose.yaml' run --rm trainer scripts/train.py --config configs/default.yaml"
 }
 Write-Host "SUCCESS: deploy mode '$Mode' completed on $Server" -ForegroundColor Green
-
