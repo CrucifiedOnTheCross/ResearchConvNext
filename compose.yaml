@@ -27,6 +27,7 @@ services:
       - ./:/workspace
       - ${USERPROFILE}/.kaggle:/root/.kaggle:ro
     environment:
+      - SHELL=/bin/bash
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
       - TORCHINDUCTOR_CACHE_DIR=/workspace/runs/.torchinductor
     entrypoint: ["jupyter", "lab"]
@@ -37,6 +38,7 @@ services:
       - "--allow-root"
       - "--ServerApp.allow_remote_access=True"
       - "--ServerApp.root_dir=/workspace"
+      - '--ServerApp.terminado_settings={"shell_command":["/bin/bash","-l"]}'
       - "--IdentityProvider.token="
     restart: unless-stopped
 
