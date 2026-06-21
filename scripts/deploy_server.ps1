@@ -2,7 +2,7 @@ param(
   [string]$Server = "lab-bio@10.200.1.180",
   [string]$Repo = "https://github.com/CrucifiedOnTheCross/ResearchConvNext.git",
   [string]$RemoteDir = "ResearchConvNext",
-  [ValidateSet("smoke","prepare","train-smoke","train")][string]$Mode = "smoke"
+  [ValidateSet("smoke","services","prepare","train-smoke","train")][string]$Mode = "smoke"
 )
 $ErrorActionPreference = "Stop"
 
@@ -44,6 +44,29 @@ docker compose -f "$RemoteDir\compose.yaml" build trainer
 docker compose -f "$RemoteDir\compose.yaml" run --rm trainer scripts/smoke_gpu.py
 "@
 Invoke-RemotePs $bootstrap
+
+if ($Mode -eq "services") {
+  $services = @"
+`$ErrorActionPreference='Stop'
+`$envFile="$RemoteDir\.env"
+if (-not (Test-Path `$envFile)) {
+  `$token=([guid]::NewGuid().ToString('N')+[guid]::NewGuid().ToString('N'))
+  Set-Content -Path `$envFile -Value "JUPYTER_TOKEN=`$token" -Encoding ascii
+} else {
+  `$token=((Get-Content `$envFile | Where-Object { `$_ -like 'JUPYTER_TOKEN=*' }) -split '=',2)[1]
+}
+docker compose -f "$RemoteDir\compose.yaml" up -d jupyter tensorboard
+try {
+  if (-not (Get-NetFirewallRule -DisplayName 'ResearchConvNext Web' -ErrorAction SilentlyContinue)) {
+    New-NetFirewallRule -DisplayName 'ResearchConvNext Web' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8888,6006 | Out-Null
+  }
+} catch { Write-Warning 'Firewall ports were not opened (run once from elevated PowerShell if URLs are unreachable).' }
+Write-Output "JUPYTER_URL=http://10.200.1.180:8888/lab?token=`$token"
+Write-Output "TENSORBOARD_URL=http://10.200.1.180:6006"
+docker compose -f "$RemoteDir\compose.yaml" ps
+"@
+  Invoke-RemotePs $services
+}
 
 if ($Mode -in @("prepare","train-smoke","train")) {
   Invoke-RemotePs "docker compose -f '$RemoteDir\compose.yaml' run --rm trainer scripts/download_data.py --root data/ham10000; if (`$LASTEXITCODE) { exit `$LASTEXITCODE }; docker compose -f '$RemoteDir\compose.yaml' run --rm trainer scripts/prepare_data.py --root data/ham10000 --size 224 --cache"

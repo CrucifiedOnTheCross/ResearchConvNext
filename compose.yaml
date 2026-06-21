@@ -16,3 +16,36 @@ services:
       - TORCHINDUCTOR_CACHE_DIR=/workspace/runs/.torchinductor
     command: ["scripts/train.py", "--config", "configs/default.yaml"]
 
+  jupyter:
+    image: ham10000-convnext:latest
+    gpus: all
+    ipc: host
+    shm_size: "16gb"
+    ports:
+      - "0.0.0.0:8888:8888"
+    volumes:
+      - ./:/workspace
+      - ${USERPROFILE}/.kaggle:/root/.kaggle:ro
+    environment:
+      - JUPYTER_TOKEN=${JUPYTER_TOKEN:-change-this-token}
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - TORCHINDUCTOR_CACHE_DIR=/workspace/runs/.torchinductor
+    entrypoint: ["jupyter", "lab"]
+    command:
+      - "--ip=0.0.0.0"
+      - "--port=8888"
+      - "--no-browser"
+      - "--ServerApp.allow_remote_access=True"
+      - "--ServerApp.root_dir=/workspace"
+      - "--ServerApp.token=${JUPYTER_TOKEN:-change-this-token}"
+    restart: unless-stopped
+
+  tensorboard:
+    image: ham10000-convnext:latest
+    ports:
+      - "0.0.0.0:6006:6006"
+    volumes:
+      - ./runs:/workspace/runs:ro
+    entrypoint: ["tensorboard"]
+    command: ["--logdir", "/workspace/runs", "--host", "0.0.0.0", "--port", "6006", "--reload_interval", "5"]
+    restart: unless-stopped
