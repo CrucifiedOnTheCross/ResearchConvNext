@@ -39,6 +39,7 @@ if (-not `$hasHead) {
   & `$git -C "$RemoteDir" checkout main
   & `$git -C "$RemoteDir" pull --ff-only origin main
 }
+& `$git -C "$RemoteDir" checkout-index -a -f
 docker compose -f "$RemoteDir\compose.yaml" build trainer
 docker compose -f "$RemoteDir\compose.yaml" run --rm trainer scripts/smoke_gpu.py
 "@
