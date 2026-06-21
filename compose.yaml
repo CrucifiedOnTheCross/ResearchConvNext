@@ -1,0 +1,18 @@
+services:
+  trainer:
+    build: .
+    image: ham10000-convnext:latest
+    gpus: all
+    ipc: host
+    shm_size: "16gb"
+    volumes:
+      - ./data:/workspace/data
+      - ./runs:/workspace/runs
+      - ${USERPROFILE}/.kaggle:/root/.kaggle:ro
+    environment:
+      - OMP_NUM_THREADS=8
+      - MKL_NUM_THREADS=8
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - TORCHINDUCTOR_CACHE_DIR=/workspace/runs/.torchinductor
+    command: ["scripts/train.py", "--config", "configs/default.yaml"]
+

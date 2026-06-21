@@ -1,0 +1,46 @@
+seed: 42
+data:
+  root: data/ham10000
+  metadata: data/ham10000/HAM10000_metadata.csv
+  splits: data/ham10000/splits.csv
+  cache_dir: data/ham10000/cache_224
+  image_size: 224
+  val_size: 0.15
+  test_size: 0.15
+  cache_images: true
+model:
+  name: convnext_base.fb_in22k_ft_in1k
+  pretrained: true
+  embedding_dim: 256
+  dropout: 0.2
+  compile: true
+  gradient_checkpointing: false
+training:
+  method: supcon
+  epochs: 50
+  batch_size: auto
+  batch_candidates: [128, 96, 80, 64, 48, 32, 24, 16]
+  effective_batch_size: 128
+  workers: 12
+  prefetch_factor: 3
+  precision: bf16
+  learning_rate: 0.0002
+  head_learning_rate: 0.001
+  weight_decay: 0.05
+  warmup_epochs: 3
+  label_smoothing: 0.05
+  temperature: 0.1
+  margin: 0.2
+  ce_weight: 1.0
+  metric_weight: 0.5
+  grad_clip: 1.0
+  early_stopping: 10
+  monitor: val_macro_f1
+  class_balance: weighted_sampler
+  channels_last: true
+  profile_steps: 0
+output:
+  root: runs
+  save_embeddings: true
+  visualizations: true
+
