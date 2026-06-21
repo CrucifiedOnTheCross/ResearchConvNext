@@ -14,6 +14,7 @@ function Invoke-RemotePs([string]$Code) {
 
 $bootstrap = @"
 `$ErrorActionPreference='Stop'
+`$ProgressPreference='SilentlyContinue'
 `$git="`$HOME\MinGit\cmd\git.exe"
 if (-not (Test-Path `$git)) {
   `$zip="`$HOME\MinGit.zip"
@@ -24,15 +25,15 @@ if (-not (Test-Path "$RemoteDir\.git")) {
   New-Item -ItemType Directory -Force "$RemoteDir" | Out-Null
   & `$git -C "$RemoteDir" init
 }
-& `$git -C "$RemoteDir" remote get-url origin *>`$null
-if (`$LASTEXITCODE -ne 0) {
+`$ErrorActionPreference='SilentlyContinue'; & `$git -C "$RemoteDir" remote get-url origin *>`$null; `$hasRemote=(`$LASTEXITCODE -eq 0); `$ErrorActionPreference='Stop'
+if (-not `$hasRemote) {
   & `$git -C "$RemoteDir" remote add origin "$Repo"
 } else {
   & `$git -C "$RemoteDir" remote set-url origin "$Repo"
 }
 & `$git -C "$RemoteDir" fetch origin main
-& `$git -C "$RemoteDir" rev-parse --verify HEAD *>`$null
-if (`$LASTEXITCODE -ne 0) {
+`$ErrorActionPreference='SilentlyContinue'; & `$git -C "$RemoteDir" rev-parse --verify HEAD *>`$null; `$hasHead=(`$LASTEXITCODE -eq 0); `$ErrorActionPreference='Stop'
+if (-not `$hasHead) {
   & `$git -C "$RemoteDir" checkout -B main origin/main --force
 } else {
   & `$git -C "$RemoteDir" checkout main
