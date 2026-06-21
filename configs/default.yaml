@@ -39,6 +39,8 @@ training:
   monitor: val_macro_f1
   class_balance: weighted_sampler
   channels_last: true
+  progress_bar: true
+  progress_updates: 20
   profile_steps: 0
 output:
   root: runs

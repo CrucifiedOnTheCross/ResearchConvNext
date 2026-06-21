@@ -5,6 +5,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"src"))
 import numpy as np, torch, yaml
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
+from tqdm.auto import tqdm
 from ham_pipeline.data import CLASSES,make_loaders
 from ham_pipeline.losses import build_metric_loss
 from ham_pipeline.metrics import evaluate_arrays,save_plots
@@ -70,12 +71,15 @@ def find_batch(cfg,device,logger):
         return b
     raise RuntimeError("No batch candidate fits VRAM")
 
-def run_epoch(model,loader,optimizer,metric_loss,scaler,device,cfg,train=True):
-    tc=cfg["training"]; model.train(train); total=correct=n=0; optimizer.zero_grad(set_to_none=True) if train else None
+def run_epoch(model,loader,optimizer,metric_loss,scaler,device,cfg,train=True,epoch=0,epochs=0):
+    tc=cfg["training"]; model.train(train); n=0; optimizer.zero_grad(set_to_none=True) if train else None
+    total=torch.zeros((),device=device); correct=torch.zeros((),device=device,dtype=torch.long)
     accum=max(1,math.ceil(tc["effective_batch_size"]/loader.batch_size)); start=time.perf_counter()
     context=torch.enable_grad if train else torch.inference_mode
+    updates=max(1,int(tc.get("progress_updates",20)))
+    batches=tqdm(loader,desc=f"Train {epoch:02d}/{epochs:02d}",unit="batch",dynamic_ncols=True,leave=True,disable=not tc.get("progress_bar",True))
     with context():
-      for step,(x,y,_) in enumerate(loader):
+      for step,(x,y,_) in enumerate(batches):
         x=x.to(device,non_blocking=True); y=y.to(device,non_blocking=True)
         if x.ndim==5: x=x.flatten(0,1); y=y.repeat_interleave(2)
         if tc["channels_last"]: x=x.to(memory_format=torch.channels_last)
@@ -90,13 +94,16 @@ def run_epoch(model,loader,optimizer,metric_loss,scaler,device,cfg,train=True):
                 if scaler: scaler.step(optimizer); scaler.update()
                 else: optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
-        total+=float(loss.detach())*accum*len(y); correct+=(logits.argmax(1)==y).sum().item(); n+=len(y)
-    return {"loss":total/n,"accuracy":correct/n,"images_per_sec":n/(time.perf_counter()-start)}
+        total+=loss.detach()*accum*len(y); correct+=(logits.argmax(1)==y).sum(); n+=len(y)
+        if (step+1)%updates==0 or step+1==len(loader):
+            batches.set_postfix(loss=f"{(total/n).item():.3f}",acc=f"{100*correct.item()/n:.1f}%",ips=f"{n/(time.perf_counter()-start):.0f}",vram=f"{torch.cuda.memory_allocated(device)/(1024**3):.1f}G")
+    return {"loss":total.item()/n,"accuracy":correct.item()/n,"images_per_sec":n/(time.perf_counter()-start)}
 
 @torch.inference_mode()
-def predict(model,loader,device,cfg):
+def predict(model,loader,device,cfg,desc="Evaluate"):
     model.eval(); ls=[]; ys=[]; zs=[]; ids=[]
-    for x,y,i in loader:
+    batches=tqdm(loader,desc=desc,unit="batch",dynamic_ncols=True,leave=False,disable=not cfg["training"].get("progress_bar",True))
+    for x,y,i in batches:
         x=x.to(device,non_blocking=True)
         if cfg["training"]["channels_last"]: x=x.to(memory_format=torch.channels_last)
         with autocast_ctx(cfg["training"]["precision"]): l,z=model(x)
@@ -123,8 +130,9 @@ def main():
     scaler=torch.amp.GradScaler("cuda") if tc["precision"]=="fp16" else None; mloss=build_metric_loss(tc["method"],tc["temperature"],tc["margin"])
     best=-1; bad=0; history=[]
     for epoch in range(epochs):
-        tr=run_epoch(model,loaders["train"],opt,mloss,scaler,device,cfg,True); logits,y,z,_=predict(model,loaders["val"],device,cfg); vm,_,_,_=evaluate_arrays(logits,y,z,CLASSES); sched.step()
-        row={"epoch":epoch+1,**{f"train_{k}":v for k,v in tr.items()},"val_macro_f1":vm["macro_f1"],"val_balanced_accuracy":vm["balanced_accuracy"],"lr":opt.param_groups[0]["lr"]}; history.append(row); logger.info("epoch %d: %s",epoch+1,row)
+        tr=run_epoch(model,loaders["train"],opt,mloss,scaler,device,cfg,True,epoch+1,epochs); logits,y,z,_=predict(model,loaders["val"],device,cfg,f"Valid {epoch+1:02d}/{epochs:02d}"); vm,_,_,_=evaluate_arrays(logits,y,z,CLASSES); sched.step()
+        row={"epoch":epoch+1,**{f"train_{k}":v for k,v in tr.items()},"val_macro_f1":vm["macro_f1"],"val_balanced_accuracy":vm["balanced_accuracy"],"lr":opt.param_groups[0]["lr"]}; history.append(row)
+        logger.info("Epoch %02d/%02d | loss %.4f | train acc %.2f%% | val Macro-F1 %.4f | val balanced acc %.4f | %.0f img/s | lr %.2e",epoch+1,epochs,row["train_loss"],100*row["train_accuracy"],row["val_macro_f1"],row["val_balanced_accuracy"],row["train_images_per_sec"],row["lr"])
         for k,v in row.items():
             if isinstance(v,(int,float)): writer.add_scalar(k,v,epoch+1)
         score=row[tc["monitor"]]
@@ -135,7 +143,7 @@ def main():
     ck=torch.load(run/"best.pt",map_location=device,weights_only=False); raw.load_state_dict(ck["model"])
     calibrated_temperature=None
     for split in ("val","test"):
-        logits,y,z,ids=predict(raw,loaders[split],device,cfg); metrics,probs,pred,used_temperature=evaluate_arrays(logits,y,z,CLASSES,temperature=calibrated_temperature,fit_temperature=split=="val")
+        logits,y,z,ids=predict(raw,loaders[split],device,cfg,split.capitalize()); metrics,probs,pred,used_temperature=evaluate_arrays(logits,y,z,CLASSES,temperature=calibrated_temperature,fit_temperature=split=="val")
         if split=="val": calibrated_temperature=used_temperature
         save_json(metrics,run/f"{split}_metrics.json")
         np.savez_compressed(run/f"{split}_predictions.npz",ids=np.array(ids),y=y,logits=logits,probs=probs,embeddings=z)
