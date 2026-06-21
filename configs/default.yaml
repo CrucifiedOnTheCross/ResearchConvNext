@@ -19,7 +19,8 @@ training:
   method: supcon
   epochs: 50
   batch_size: auto
-  batch_candidates: [128, 96, 80, 64, 48, 32, 24, 16]
+  # SupCon creates two augmented views, so VRAM sees twice this batch size.
+  batch_candidates: [32, 24, 16, 12, 8, 4]
   effective_batch_size: 128
   workers: 12
   prefetch_factor: 3
@@ -43,4 +44,3 @@ output:
   root: runs
   save_embeddings: true
   visualizations: true
-

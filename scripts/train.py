@@ -1,5 +1,5 @@
 from __future__ import annotations
-import argparse, math, os, sys, time
+import argparse, gc, math, os, sys, time
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"src"))
 import numpy as np, torch, yaml
@@ -26,19 +26,48 @@ def autocast_ctx(precision):
 def build_model(cfg,device):
     m=ConvNeXtMetric(cfg["name"],len(CLASSES),cfg["embedding_dim"],cfg["dropout"],cfg["pretrained"]); m.set_checkpointing(cfg.get("gradient_checkpointing",False)); return m.to(device)
 
+def _probe_batch(cfg,device,batch_size):
+    tc=cfg["training"]; mc=cfg["model"]; size=cfg["data"]["image_size"]
+    model=build_model(mc,device).train()
+    images=torch.randn(batch_size*2,3,size,size,device=device)
+    if tc["channels_last"]:
+        model=model.to(memory_format=torch.channels_last)
+        images=images.to(memory_format=torch.channels_last)
+    optimizer=torch.optim.AdamW(model.parameters(),lr=1e-4)
+    with autocast_ctx(tc["precision"]):
+        logits,embeddings=model(images)
+        loss=logits.mean()+embeddings.mean()
+    loss.backward()
+    optimizer.step()  # Materialize AdamW states before accepting the batch.
+    torch.cuda.synchronize(device)
+    return torch.cuda.max_memory_allocated(device)/(1024**3)
+
+def _is_cuda_oom(error):
+    message=str(error).lower()
+    return isinstance(error,torch.cuda.OutOfMemoryError) or (
+        "out of memory" in message and ("cuda" in message or "cudnn" in message)
+    )
+
+def _clear_cuda(device):
+    gc.collect()
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats(device)
+
 def find_batch(cfg,device,logger):
     tc=cfg["training"]; mc=cfg["model"]; size=cfg["data"]["image_size"]
     if tc["batch_size"]!="auto": return int(tc["batch_size"])
     for b in tc["batch_candidates"]:
+        _clear_cuda(device)
         try:
-            m=build_model(mc,device); m.train(); x=torch.randn(b*2,3,size,size,device=device)
-            if tc["channels_last"]: m=m.to(memory_format=torch.channels_last); x=x.to(memory_format=torch.channels_last)
-            probe_opt=torch.optim.AdamW(m.parameters(),lr=1e-4)
-            with autocast_ctx(tc["precision"]): logits,z=m(x); loss=logits.mean()+z.mean()
-            loss.backward(); probe_opt.step()  # materialize AdamW states before accepting the batch
-            del probe_opt,m,x,logits,z,loss; torch.cuda.empty_cache(); logger.info("Auto batch selected: %s",b); return b
-        except torch.cuda.OutOfMemoryError:
-            logger.info("Batch %s OOM",b); torch.cuda.empty_cache()
+            peak_vram=_probe_batch(cfg,device,b)
+        except RuntimeError as error:
+            if not _is_cuda_oom(error): raise
+            logger.info("Batch %s OOM; trying a smaller candidate",b)
+            _clear_cuda(device)
+            continue
+        _clear_cuda(device)
+        logger.info("Auto batch selected: %s (probe peak %.2f GiB)",b,peak_vram)
+        return b
     raise RuntimeError("No batch candidate fits VRAM")
 
 def run_epoch(model,loader,optimizer,metric_loss,scaler,device,cfg,train=True):
