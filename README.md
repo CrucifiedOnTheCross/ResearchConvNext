@@ -18,6 +18,16 @@ docker compose run --rm trainer scripts/train.py --config configs/default.yaml
 .\scripts\run_all.ps1 -Method supcon -Epochs 50
 ```
 
+## Deploy на сервер одной командой
+
+Локально нужны только Windows OpenSSH Client и Git. На сервере нужны Docker Desktop с WSL2 backend и NVIDIA-драйвер; скрипт сам установит portable MinGit без прав администратора, выполнит pull/build и GPU smoke-test:
+
+```powershell
+.\scripts\deploy_server.ps1 -Mode smoke
+```
+
+Режимы: `smoke` — доставка + GPU-тест; `prepare` — дополнительно скачать/разбить/кэшировать HAM10000; `train-smoke` — весь pipeline на 1 эпоху; `train` — полное обучение. Любая ошибка возвращает ненулевой exit code, успешный конец печатает зелёный `SUCCESS`. Следующие deploy используют `git pull` и Docker cache, поэтому обычно занимают секунды.
+
 Скачивание использует публичный Kaggle dataset `kmader/skin-cancer-mnist-ham10000`; положите API-токен в `%USERPROFILE%\.kaggle\kaggle.json`. Альтернатива без Kaggle API:
 
 ```powershell
@@ -64,4 +74,3 @@ SupCon, Triplet, Multi-Similarity, Circle, Proxy-Anchor, ArcFace/CosFace и Cent
 ## Рекомендуемый порядок экспериментов
 
 Сделайте smoke-test на 1 эпоху, затем отдельные seed для каждого метода. Не подбирайте гиперпараметры по test. Значения margin/temperature/metric weight подбирайте только по validation Macro-F1/Balanced Accuracy. Для профилирования используйте TensorBoard Profiler, `nvidia-smi dmon` или `nvtop`; высокое потребление VRAM само по себе не означает высокую загрузку GPU.
-
